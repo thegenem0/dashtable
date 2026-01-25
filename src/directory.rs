@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use crate::segment::{Segment, REGULAR_BUCKETS};
 
 #[allow(dead_code)]
@@ -118,6 +120,53 @@ impl<K, V> Directory<K, V> {
 
 impl<K, V> Directory<K, V>
 where
+    K: Eq,
+{
+    /// Get value by fingerprint, hash and key
+    pub fn get<Q>(&self, fp: u8, hash: u64, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.get_segment(hash).get(fp, hash, key)
+    }
+
+    /// Get mutable value
+    pub fn get_mut<Q>(&mut self, fp: u8, hash: u64, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.get_segment_mut(hash).get_mut(fp, hash, key)
+    }
+
+    /// Check if key exists
+    pub fn contains_key<Q>(&self, fp: u8, hash: u64, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.get_segment(hash).contains(fp, hash, key)
+    }
+
+    /// Remove entry
+    pub fn remove<Q>(&mut self, fp: u8, hash: u64, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        let segment = self.get_segment_mut(hash);
+        if let Some((_, value)) = segment.remove(fp, hash, key) {
+            self.len -= 1;
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
+impl<K, V> Directory<K, V>
+where
     K: Eq + std::hash::Hash,
 {
     /// Split segment and update directory
@@ -161,16 +210,6 @@ where
         }
     }
 
-    /// Get value by fingerprint, hash and key
-    pub fn get(&self, fp: u8, hash: u64, key: &K) -> Option<&V> {
-        self.get_segment(hash).get(fp, hash, key)
-    }
-
-    /// Get mutable value
-    pub fn get_mut(&mut self, fp: u8, hash: u64, key: &K) -> Option<&mut V> {
-        self.get_segment_mut(hash).get_mut(fp, hash, key)
-    }
-
     /// Insert key-value pair
     pub fn insert<F>(&mut self, fp: u8, hash: u64, key: K, value: V, mut hash_fn: F) -> Option<V>
     where
@@ -209,17 +248,6 @@ where
                     self.split_segment(hash, &mut hash_fn);
                 }
             }
-        }
-    }
-
-    /// Remove entry
-    pub fn remove(&mut self, fp: u8, hash: u64, key: &K) -> Option<V> {
-        let segment = self.get_segment_mut(hash);
-        if let Some((_, value)) = segment.remove(fp, hash, key) {
-            self.len -= 1;
-            Some(value)
-        } else {
-            None
         }
     }
 }
@@ -329,5 +357,26 @@ mod tests {
         }
 
         assert!(dir.global_depth() > 1);
+    }
+
+    #[test]
+    fn test_borrow_lookup() {
+        let mut dir: Directory<String, u64> = Directory::new();
+
+        let key = "hello".to_string();
+        let (hash, fp) = compute_hash(&key);
+        dir.insert(fp, hash, key, 42, compute_hash);
+
+        // Look up with &str instead of &String
+        let value = dir.get(fp, hash, "hello");
+        assert_eq!(value, Some(&42));
+
+        // contains_key with &str
+        assert!(dir.contains_key(fp, hash, "hello"));
+        assert!(!dir.contains_key(fp, hash, "world"));
+
+        // remove with &str
+        let removed = dir.remove(fp, hash, "hello");
+        assert_eq!(removed, Some(42));
     }
 }

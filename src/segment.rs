@@ -7,6 +7,8 @@
 //! - Stash hints for fast stash lookups
 //! - Local depth tracking for extendible hashing
 
+use std::borrow::Borrow;
+
 use crate::bucket::{Bucket, SLOTS_PER_BUCKET};
 
 /// Number of regular buckets
@@ -219,7 +221,11 @@ where
 {
     /// Find entry in stash via hints
     /// Returns (stash_bucket_idx, slot_idx) if found
-    fn find_in_stash(&self, home: usize, fp: u8, key: &K) -> Option<(usize, usize)> {
+    fn find_in_stash<Q>(&self, home: usize, fp: u8, key: &Q) -> Option<(usize, usize)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let neighbour = Self::next_bucket(home);
 
         // collect stash buckets to check hints from
@@ -263,7 +269,11 @@ where
     ///
     /// Returns (bucket_idx, slot_idx) if found
     /// bucket_idx >= REGULAR_BUCKETS indicates entry is in stash
-    pub fn find(&self, fp: u8, hash: u64, key: &K) -> Option<(usize, usize)> {
+    pub fn find<Q>(&self, fp: u8, hash: u64, key: &Q) -> Option<(usize, usize)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let probes = Self::probe_sequence(hash);
         let home = probes[0];
 
@@ -287,26 +297,42 @@ where
 
     /// Check if key exists
     #[inline]
-    pub fn contains(&self, fp: u8, hash: u64, key: &K) -> bool {
+    pub fn contains<Q>(&self, fp: u8, hash: u64, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         self.find(fp, hash, key).is_some()
     }
 
     /// Get reference to value by fingerprint, hash, and key
-    pub fn get(&self, fp: u8, hash: u64, key: &K) -> Option<&V> {
+    pub fn get<Q>(&self, fp: u8, hash: u64, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
         let bucket = self.get_bucket(bucket_idx);
         Some(unsafe { bucket.get_value(slot_idx) })
     }
 
     /// Get mutable reference to value by hash, fingerprint and key
-    pub fn get_mut(&mut self, fp: u8, hash: u64, key: &K) -> Option<&mut V> {
+    pub fn get_mut<Q>(&mut self, fp: u8, hash: u64, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
         let bucket = self.get_bucket_mut(bucket_idx);
         Some(unsafe { bucket.get_value_mut(slot_idx) })
     }
 
     /// Get key-value pari references
-    pub fn get_kv(&self, fp: u8, hash: u64, key: &K) -> Option<(&K, &V)> {
+    pub fn get_kv<Q>(&self, fp: u8, hash: u64, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
         let bucket = self.get_bucket(bucket_idx);
         // Safety: find() only returns occupied slots
@@ -382,7 +408,11 @@ where
     /// Remove entry by hash, fingerprint and key.
     ///
     /// Returns `(key, value)` if found and removed.
-    pub fn remove(&mut self, fp: u8, hash: u64, key: &K) -> Option<(K, V)> {
+    pub fn remove<Q>(&mut self, fp: u8, hash: u64, key: &Q) -> Option<(K, V)>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
 
         let (k, v) = self.get_bucket_mut(bucket_idx).remove_at(slot_idx);
@@ -399,7 +429,11 @@ where
     }
 
     /// Remove entry and return only the value
-    pub fn remove_value(&mut self, hash: u64, fp: u8, key: &K) -> Option<V> {
+    pub fn remove_value<Q>(&mut self, hash: u64, fp: u8, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         self.remove(fp, hash, key).map(|(_, v)| v)
     }
 

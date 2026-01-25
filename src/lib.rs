@@ -6,3 +6,4 @@
 pub mod bucket;
 pub mod segment;
 pub mod directory;
+pub mod table;

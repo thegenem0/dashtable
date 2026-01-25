@@ -6,7 +6,7 @@
 //! - Packed control word for slot state
 //! - Stash hints for fast stash lookups
 
-use std::mem::MaybeUninit;
+use std::{borrow::Borrow, mem::MaybeUninit};
 
 // Number of slots per bucket
 pub const SLOTS_PER_BUCKET: usize = 12;
@@ -494,13 +494,17 @@ where
     K: Eq,
 {
     /// Find slot containing key (if any)
-    pub fn find_key(&self, fp: u8, key: &K) -> Option<usize> {
+    pub fn find_key<Q>(&self, fp: u8, key: &Q) -> Option<usize>
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
         let mut mask = self.find_fingerprint_mask(fp);
         while mask != 0 {
             let slot = mask.trailing_zeros() as usize;
             // Safety: slot is occupied (from fp match which checks busy)
             let slot_key = unsafe { self.keys[slot].assume_init_ref() };
-            if slot_key == key {
+            if slot_key.borrow() == key {
                 return Some(slot);
             }
             mask &= mask - 1; // clear lowest bit
