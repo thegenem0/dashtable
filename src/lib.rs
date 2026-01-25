@@ -5,3 +5,4 @@
 
 pub mod bucket;
 pub mod segment;
+pub mod directory;

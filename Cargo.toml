@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "High-performance segmented hash table inspired by DragonflyDB"
 
 [features]
-default = []
+default = ["simd"]
 simd = []  # SIMD fingerprint matching
 
 [dev-dependencies]

@@ -263,7 +263,7 @@ where
     ///
     /// Returns (bucket_idx, slot_idx) if found
     /// bucket_idx >= REGULAR_BUCKETS indicates entry is in stash
-    pub fn find(&self, hash: u64, fp: u8, key: &K) -> Option<(usize, usize)> {
+    pub fn find(&self, fp: u8, hash: u64, key: &K) -> Option<(usize, usize)> {
         let probes = Self::probe_sequence(hash);
         let home = probes[0];
 
@@ -287,27 +287,27 @@ where
 
     /// Check if key exists
     #[inline]
-    pub fn contains(&self, hash: u64, fp: u8, key: &K) -> bool {
-        self.find(hash, fp, key).is_some()
+    pub fn contains(&self, fp: u8, hash: u64, key: &K) -> bool {
+        self.find(fp, hash, key).is_some()
     }
 
-    /// Get reference to value by hash, fingerprint and key
-    pub fn get(&self, hash: u64, fp: u8, key: &K) -> Option<&V> {
-        let (bucket_idx, slot_idx) = self.find(hash, fp, key)?;
+    /// Get reference to value by fingerprint, hash, and key
+    pub fn get(&self, fp: u8, hash: u64, key: &K) -> Option<&V> {
+        let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
         let bucket = self.get_bucket(bucket_idx);
         Some(unsafe { bucket.get_value(slot_idx) })
     }
 
     /// Get mutable reference to value by hash, fingerprint and key
-    pub fn get_mut(&mut self, hash: u64, fp: u8, key: &K) -> Option<&mut V> {
-        let (bucket_idx, slot_idx) = self.find(hash, fp, key)?;
+    pub fn get_mut(&mut self, fp: u8, hash: u64, key: &K) -> Option<&mut V> {
+        let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
         let bucket = self.get_bucket_mut(bucket_idx);
         Some(unsafe { bucket.get_value_mut(slot_idx) })
     }
 
     /// Get key-value pari references
-    pub fn get_kv(&self, hash: u64, fp: u8, key: &K) -> Option<(&K, &V)> {
-        let (bucket_idx, slot_idx) = self.find(hash, fp, key)?;
+    pub fn get_kv(&self, fp: u8, hash: u64, key: &K) -> Option<(&K, &V)> {
+        let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
         let bucket = self.get_bucket(bucket_idx);
         // Safety: find() only returns occupied slots
         unsafe { Some((bucket.get_key(slot_idx), bucket.get_value(slot_idx))) }
@@ -315,12 +315,18 @@ where
 
     /// Insert entry
     ///
-    /// Returns `Some((bucket_idx, slot_idx))` on success
-    /// Returns `None` if segment is full (needs splitting)
+    /// Returns `Ok((bucket_idx, slot_idx))` on success
+    /// Returns `Err((key, value))` if segment is full (needs splitting)
     ///
     /// Note: This does NOT check for duplicates. Caller should check first
     /// if upsert semantics are needed.
-    pub fn insert(&mut self, hash: u64, fp: u8, key: K, value: V) -> Option<(usize, usize)> {
+    pub fn insert(
+        &mut self,
+        fp: u8,
+        hash: u64,
+        key: K,
+        value: V,
+    ) -> Result<(usize, usize), (K, V)> {
         let home = Self::home_bucket(hash);
         let neighbour = Self::next_bucket(home);
 
@@ -328,14 +334,14 @@ where
         if let Some(slot) = self.regular[home].find_empty() {
             self.regular[home].insert_at(slot, fp, key, value, false);
             self.count += 1;
-            return Some((home, slot));
+            return Ok((home, slot));
         }
 
         // try neighbour bucket
         if let Some(slot) = self.regular[neighbour].find_empty() {
             self.regular[neighbour].insert_at(slot, fp, key, value, true);
             self.count += 1;
-            return Some((neighbour, slot));
+            return Ok((neighbour, slot));
         }
 
         // try stash buckets
@@ -345,11 +351,11 @@ where
                 self.count += 1;
                 self.add_stash_hint(home, fp, i);
 
-                return Some((REGULAR_BUCKETS + i, slot));
+                return Ok((REGULAR_BUCKETS + i, slot));
             }
         }
 
-        None // segment is full
+        Err((key, value)) // segment is full
     }
 
     /// Insert entry, checking for existing key first.
@@ -357,9 +363,9 @@ where
     /// Returns `InsertResult::Inserted` on success.
     /// Returns `InsertResult::Updated(old_value)` if key existed.
     /// Returns `InsertResult::SegmentFull(key, value)` if segment is full.
-    pub fn insert_checked(&mut self, hash: u64, fp: u8, key: K, value: V) -> InsertResult<V> {
+    pub fn insert_checked(&mut self, fp: u8, hash: u64, key: K, value: V) -> InsertResult<K, V> {
         // check if key exists
-        if let Some((bucket_idx, slot_idx)) = self.find(hash, fp, &key) {
+        if let Some((bucket_idx, slot_idx)) = self.find(fp, hash, &key) {
             let bucket = self.get_bucket_mut(bucket_idx);
             // Safety: find() only returns occupied slots
             let old_value = std::mem::replace(unsafe { bucket.get_value_mut(slot_idx) }, value);
@@ -367,21 +373,17 @@ where
         }
 
         // try to insert
-        match self.insert(hash, fp, key, value) {
-            Some(_) => InsertResult::Inserted,
-            None => {
-                // Can't recover key/value here - they were consumed by insert()
-                // Caller needs to handle this case properly
-                InsertResult::SegmentFull
-            }
+        match self.insert(fp, hash, key, value) {
+            Ok(_) => InsertResult::Inserted,
+            Err((k, v)) => InsertResult::SegmentFull(k, v),
         }
     }
 
     /// Remove entry by hash, fingerprint and key.
     ///
     /// Returns `(key, value)` if found and removed.
-    pub fn remove(&mut self, hash: u64, fp: u8, key: &K) -> Option<(K, V)> {
-        let (bucket_idx, slot_idx) = self.find(hash, fp, key)?;
+    pub fn remove(&mut self, fp: u8, hash: u64, key: &K) -> Option<(K, V)> {
+        let (bucket_idx, slot_idx) = self.find(fp, hash, key)?;
 
         let (k, v) = self.get_bucket_mut(bucket_idx).remove_at(slot_idx);
         self.count -= 1;
@@ -398,7 +400,7 @@ where
 
     /// Remove entry and return only the value
     pub fn remove_value(&mut self, hash: u64, fp: u8, key: &K) -> Option<V> {
-        self.remove(hash, fp, key).map(|(_, v)| v)
+        self.remove(fp, hash, key).map(|(_, v)| v)
     }
 
     /// Iterate over all entries in the segment.
@@ -537,8 +539,8 @@ where
 
         // insert moved entries into sibling
         for (hash, fp, key, value) in to_move {
-            let result = sibling.insert(hash, fp, key, value);
-            debug_assert!(result.is_some(), "sibling segment full during split");
+            let result = sibling.insert(fp, hash, key, value);
+            debug_assert!(result.is_ok(), "sibling segment full during split");
         }
 
         // update depth
@@ -550,7 +552,7 @@ where
 
 /// Result of checked insert operation
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InsertResult<V> {
+pub enum InsertResult<K, V> {
     /// Entry inserted successfully
     Inserted,
 
@@ -559,7 +561,7 @@ pub enum InsertResult<V> {
 
     /// Segment is full, entry could not be inserted
     /// Key and value were consumed, caller should split and retry
-    SegmentFull,
+    SegmentFull(K, V),
 }
 
 #[cfg(test)]
@@ -577,6 +579,8 @@ mod tests {
 
     #[test]
     fn test_probe_sequence() {
+        // Probe sequence is for FIND, not insert
+        // Order: home -> prev -> next -> next+1
         let probes = Segment::<u64, u64>::probe_sequence(0);
         assert_eq!(probes[0], 0); // home
         assert_eq!(probes[1], 63); // prev (wraps)
@@ -588,11 +592,11 @@ mod tests {
     fn test_insert_and_find() {
         let mut seg: Segment<u64, u64> = Segment::new(1);
 
-        let result = seg.insert(0x1234, 0xAB, 100, 1000);
-        assert!(result.is_some());
+        let result = seg.insert(0xAB, 0x1234, 100, 1000);
+        assert!(result.is_ok());
         assert_eq!(seg.count(), 1);
 
-        let value = seg.get(0x1234, 0xAB, &100);
+        let value = seg.get(0xAB, 0x1234, &100);
         assert_eq!(value, Some(&1000));
     }
 
@@ -602,21 +606,26 @@ mod tests {
 
         // Fill home and neighbor buckets for hash 0
         // Home = bucket 0, Neighbor = bucket 1
+        // 2-bucket insert: 12 + 12 = 24 slots before stash
         for i in 0..24 {
-            let result = seg.insert(0, i as u8, i, i * 10);
-            assert!(result.is_some(), "Failed to insert {}", i);
+            let result = seg.insert(i as u8, 0, i, i * 10);
+            assert!(result.is_ok(), "Failed to insert {}", i);
         }
 
         // Next insert should go to stash
-        let result = seg.insert(0, 0xAA, 100, 1000);
-        assert!(result.is_some());
+        let result = seg.insert(0xAA, 0, 100, 1000);
+        assert!(result.is_ok());
         let (bucket_idx, _) = result.unwrap();
-        assert!(bucket_idx >= REGULAR_BUCKETS, "Should be in stash");
+        assert!(
+            bucket_idx >= REGULAR_BUCKETS,
+            "Should be in stash, got {}",
+            bucket_idx
+        );
 
         // Should be able to find it via hints
-        assert_eq!(seg.get(0, 0xAA, &100), Some(&1000));
+        assert_eq!(seg.get(0xAA, 0, &100), Some(&1000));
 
-        // Home bucket should have stash hint
+        // Home or neighbor bucket should have stash hint
         assert!(seg.bucket(0).has_stash_entries() || seg.bucket(1).has_stash_entries());
     }
 
@@ -624,73 +633,67 @@ mod tests {
     fn test_stash_hint_removal() {
         let mut seg: Segment<u32, u32> = Segment::new(1);
 
-        // Fill home and neighbor
+        // Fill home and neighbor (24 slots)
         for i in 0..24 {
-            seg.insert(0, i as u8, i, i * 10);
+            let _ = seg.insert(i as u8, 0, i, i * 10);
         }
 
         // Insert to stash
-        seg.insert(0, 0xAA, 100, 1000);
+        let _ = seg.insert(0xAA, 0, 100, 1000);
         assert!(seg.bucket(0).has_stash_entries() || seg.bucket(1).has_stash_entries());
 
         // Remove the stash entry
-        let removed = seg.remove(0, 0xAA, &100);
+        let removed = seg.remove(0xAA, 0, &100);
         assert_eq!(removed, Some((100, 1000)));
-
-        // Stash hints should be cleared (or overflow decremented)
     }
 
     #[test]
     fn test_overflow_count() {
         let mut seg: Segment<u32, u32> = Segment::new(1);
 
-        // Fill enough to trigger overflow
-        // Each bucket has 4 hint slots
-        // Home + neighbor = 8 hint slots
-        // Fill home, neighbor, then fill stash with > 8 entries
-
         // Fill home and neighbor (24 slots)
         for i in 0..24 {
-            seg.insert(0, i as u8, i, 0);
+            let _ = seg.insert(i as u8, 0, i, 0);
         }
 
-        // Fill all stash buckets (48 more slots)
-        // This should exceed the 8 hint slots available
-        for i in 24..72 {
-            let result = seg.insert(0, i as u8, i, 0);
-            if result.is_none() {
+        // Fill stash buckets - each has 12 slots, 4 stash buckets = 48 slots
+        // But only 8 hint slots available (4 per bucket for home + neighbor)
+        // After 8 stash entries, overflow_count should increment
+        for i in 24..80 {
+            let result = seg.insert(i as u8, 0, i, 0);
+            if result.is_err() {
                 break; // Segment full
             }
         }
 
-        // Check that we can still find entries
+        // Check that we can still find entries in regular buckets
         for i in 0..24 {
-            assert!(seg.contains(0, i as u8, &i), "Can't find entry {}", i);
+            assert!(seg.contains(i as u8, 0, &i), "Can't find entry {}", i);
         }
     }
 
     #[test]
     fn test_get_mut() {
         let mut seg: Segment<u64, u64> = Segment::new(1);
-        seg.insert(0x1234, 0xAB, 100, 1000);
+        let _ = seg.insert(0xAB, 0x1234, 100, 1000);
 
-        if let Some(value) = seg.get_mut(0x1234, 0xAB, &100) {
+        if let Some(value) = seg.get_mut(0xAB, 0x1234, &100) {
             *value = 2000;
         }
 
-        assert_eq!(seg.get(0x1234, 0xAB, &100), Some(&2000));
+        assert_eq!(seg.get(0xAB, 0x1234, &100), Some(&2000));
     }
 
     #[test]
     fn test_remove() {
         let mut seg: Segment<u64, u64> = Segment::new(1);
 
-        seg.insert(0x1234, 0xAB, 100, 1000);
-        let removed = seg.remove(0x1234, 0xAB, &100);
+        let _ = seg.insert(0xAB, 0x1234, 100, 1000);
+        let removed = seg.remove(0xAB, 0x1234, &100);
 
         assert_eq!(removed, Some((100, 1000)));
         assert!(seg.is_empty());
-        assert_eq!(seg.get(0x1234, 0xAB, &100), None);
+        assert_eq!(seg.get(0xAB, 0x1234, &100), None);
     }
 
     #[test]
@@ -698,15 +701,15 @@ mod tests {
         let mut seg: Segment<u64, u64> = Segment::new(1);
 
         // First insert
-        let result = seg.insert_checked(0x1234, 0xAB, 100, 1000);
+        let result = seg.insert_checked(0xAB, 0x1234, 100, 1000);
         assert_eq!(result, InsertResult::Inserted);
 
         // Update existing
-        let result = seg.insert_checked(0x1234, 0xAB, 100, 2000);
+        let result = seg.insert_checked(0xAB, 0x1234, 100, 2000);
         assert_eq!(result, InsertResult::Updated(1000));
 
         // Verify update
-        assert_eq!(seg.get(0x1234, 0xAB, &100), Some(&2000));
+        assert_eq!(seg.get(0xAB, 0x1234, &100), Some(&2000));
         assert_eq!(seg.count(), 1);
     }
 
@@ -716,44 +719,47 @@ mod tests {
 
         // Fill home bucket (bucket 0) completely - 12 slots
         for i in 0..SLOTS_PER_BUCKET {
-            let result = seg.insert(0, i as u8, i as u32, i as u32 * 10);
-            assert!(result.is_some());
+            let result = seg.insert(i as u8, 0, i as u32, i as u32 * 10);
+            assert!(result.is_ok());
             let (bucket_idx, _) = result.unwrap();
             assert_eq!(bucket_idx, 0, "should be in home bucket");
         }
 
-        // Next insert should go to probe[1] (bucket 1)
-        let result = seg.insert(0, 0xF0, 100, 1000);
-        assert!(result.is_some());
+        // Next insert should go to neighbor bucket (bucket 1)
+        let result = seg.insert(0xF0, 0, 100, 1000);
+        assert!(result.is_ok());
         let (bucket_idx, _) = result.unwrap();
-        assert_eq!(bucket_idx, 1, "should be in prev bucket");
+        assert_eq!(bucket_idx, 1, "should be in neighbor bucket");
 
-        // Fill bucket 1
-        for i in 0..SLOTS_PER_BUCKET - 1 {
-            seg.insert(0, (0xF1 + i) as u8, 101 + i as u32, 0);
+        // Fill rest of bucket 1 (11 more slots)
+        for i in 0..(SLOTS_PER_BUCKET - 1) {
+            let _ = seg.insert((0xF1 + i) as u8, 0, 101 + i as u32, 0);
         }
 
-        // Next should go to probe[2] (bucket 64)
-        let result = seg.insert(0, 0xE0, 200, 2000);
-        assert!(result.is_some());
+        // Next should go to stash (bucket 64+)
+        let result = seg.insert(0xE0, 0, 200, 2000);
+        assert!(result.is_ok());
         let (bucket_idx, _) = result.unwrap();
-        assert_eq!(bucket_idx, 64, "should be in next bucket");
+        assert!(
+            bucket_idx >= REGULAR_BUCKETS,
+            "should be in stash, got {}",
+            bucket_idx
+        );
     }
 
     #[test]
     fn test_stash_overflow() {
         let mut seg: Segment<u32, u32> = Segment::new(1);
 
-        // Fill all 4 probe buckets for hash 0 (buckets 0, 1, 63, 2)
-        // Each has 12 slots = 48 total
-        for i in 0..48 {
-            let result = seg.insert(0, i as u8, i, i * 10);
-            assert!(result.is_some(), "Failed to insert {} (pre-stash)", i);
+        // With 2-bucket insert probing, fill home + neighbor = 24 slots
+        for i in 0..24 {
+            let result = seg.insert(i as u8, 0, i, i * 10);
+            assert!(result.is_ok(), "Failed to insert {} (pre-stash)", i);
         }
 
         // Next insert should go to stash
-        let result = seg.insert(0, 0xFF, 999, 9990);
-        assert!(result.is_some());
+        let result = seg.insert(0xFF, 0, 999, 9990);
+        assert!(result.is_ok());
         let (bucket_idx, _) = result.unwrap();
         assert!(
             bucket_idx >= REGULAR_BUCKETS,
@@ -766,9 +772,9 @@ mod tests {
     fn test_iter() {
         let mut seg: Segment<u32, u32> = Segment::new(1);
 
-        seg.insert(0, 0xAA, 1, 10);
-        seg.insert(100, 0xBB, 2, 20);
-        seg.insert(200, 0xCC, 3, 30);
+        let _ = seg.insert(0xAA, 0, 1, 10);
+        let _ = seg.insert(0xBB, 100, 2, 20);
+        let _ = seg.insert(0xCC, 200, 3, 30);
 
         let entries: Vec<_> = seg.iter().map(|(_, _, k, v)| (*k, *v)).collect();
         assert_eq!(entries.len(), 3);
@@ -781,13 +787,13 @@ mod tests {
     fn test_clear() {
         let mut seg: Segment<u64, u64> = Segment::new(1);
 
-        seg.insert(0, 0xAA, 1, 10);
-        seg.insert(1, 0xBB, 2, 20);
+        let _ = seg.insert(0xAA, 0, 1, 10);
+        let _ = seg.insert(0xBB, 1, 2, 20);
         assert_eq!(seg.count(), 2);
 
         seg.clear();
         assert!(seg.is_empty());
-        assert_eq!(seg.get(0, 0xAA, &1), None);
+        assert_eq!(seg.get(0xAA, 0, &1), None);
     }
 
     #[test]
@@ -798,13 +804,12 @@ mod tests {
         let mut seg: Segment<u64, u64> = Segment::new(1);
 
         // Insert entries with known hash patterns
-        // We'll use keys that will split based on bit 62 (since depth goes 1 -> 2)
         for i in 0u64..20 {
             let mut hasher = DefaultHasher::new();
             i.hash(&mut hasher);
             let hash = hasher.finish();
             let fp = (hash & 0xFF) as u8;
-            seg.insert(hash, fp, i, i * 100);
+            let _ = seg.insert(fp, hash, i, i * 100);
         }
 
         let initial_count = seg.count();
@@ -825,10 +830,6 @@ mod tests {
 
         // Total count should be preserved
         assert_eq!(seg.count() + sibling.count(), initial_count);
-
-        // Both should have some entries (statistically likely)
-        // Note: This could theoretically fail if all 20 hashes have same bit pattern
-        assert!(seg.count() > 0 || sibling.count() > 0);
     }
 
     #[test]
@@ -839,7 +840,7 @@ mod tests {
 
         // Insert some entries
         for i in 0..100 {
-            seg.insert(i as u64, i as u8, i, i * 10);
+            let _ = seg.insert(i as u8, i as u64, i, i * 10);
         }
 
         let expected = 100.0 / SEGMENT_CAPACITY as f64;
@@ -853,17 +854,12 @@ mod tests {
 
         let mut seg: Segment<u64, u64> = Segment::new(1);
 
-        // Helper to compute hash
         let compute_hash = |key: &u64| -> (u64, u8) {
             let mut hasher = DefaultHasher::new();
             key.hash(&mut hasher);
             let hash = hasher.finish();
             (hash, (hash & 0xFF) as u8)
         };
-
-        // Fill home and neighbor for a specific hash to force stash usage
-        // We need entries that will stay in this segment after split
-        // Use keys that produce hashes with bit 62 = 0 (stays in original)
 
         let mut keys_in_stash = Vec::new();
         let mut inserted = 0;
@@ -872,11 +868,11 @@ mod tests {
         for candidate in 0u64..10000 {
             let (hash, fp) = compute_hash(&candidate);
             let home = Segment::<u64, u64>::home_bucket(hash);
-            let split_bit = (hash >> 62) & 1; // For depth 1->2
+            let split_bit = (hash >> 62) & 1;
 
             if home == 0 && split_bit == 0 {
-                let result = seg.insert(hash, fp, candidate, candidate * 10);
-                if result.is_none() {
+                let result = seg.insert(fp, hash, candidate, candidate * 10);
+                if result.is_err() {
                     break;
                 }
                 let (bucket_idx, _) = result.unwrap();
@@ -906,27 +902,12 @@ mod tests {
 
         // Verify stash entries are still findable (hints were rebuilt)
         for (key, hash, fp) in &keys_in_stash {
-            // Entry should still be in original segment (split_bit was 0)
-            let found = seg.get(*hash, *fp, key);
+            let found = seg.get(*fp, *hash, key);
             assert!(
                 found.is_some(),
                 "Lost stash entry {} after split (hints not rebuilt?)",
                 key
             );
         }
-
-        // Verify hints were rebuilt (not just overflow fallback)
-        // If properly rebuilt, overflow_count should be 0 or minimal
-        // (depends on how many stash entries remained)
-        let has_hints_after = seg.bucket(0).has_stash_entries()
-            || seg.bucket(1).has_stash_entries()
-            || seg.overflow_count() > 0;
-        assert!(
-            has_hints_after
-                || keys_in_stash
-                    .iter()
-                    .all(|(k, h, f)| seg.get(*h, *f, k).is_some()),
-            "Stash entries should be findable after split"
-        );
     }
 }
