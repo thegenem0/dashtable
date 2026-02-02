@@ -131,7 +131,11 @@ where
 
     /// Return `true` if the table contains a value for the given key
     #[inline]
-    pub fn contains_key(&self, key: &K) -> bool {
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let (hash, fp) = self.hash_and_fingerprint(key);
         self.directory.get(fp, hash, key).is_some()
     }
@@ -233,8 +237,9 @@ mod tests {
         table.insert("hello".to_string(), 1);
         table.insert("world".to_string(), 2);
 
-        assert!(table.contains_key(&"hello".to_string()));
-        assert!(table.contains_key(&"world".to_string()));
+        // both string and &str work
+        assert!(table.contains_key("hello"));
+        assert!(table.contains_key("world"));
         assert!(!table.contains_key(&"foo".to_string()));
     }
 

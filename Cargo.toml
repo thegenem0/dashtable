@@ -16,3 +16,7 @@ rand = "0.8"
 # [[bench]]
 # name = "comparison"
 # harness = false
+
+[[example]]
+name = "simple"
+path = "examples/simple.rs"
