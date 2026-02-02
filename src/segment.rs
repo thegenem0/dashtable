@@ -239,24 +239,24 @@ where
                     return Some((REGULAR_BUCKETS + stash_idx, slot));
                 }
             }
+        }
 
-            // chech from neighbour bucket
-            for (stash_idx, _from_neighbour) in self.regular[neighbour].find_stash_hints(fp) {
-                if !checked[stash_idx] {
-                    checked[stash_idx] = true;
-                    if let Some(slot) = self.stash[stash_idx].find_key(fp, key) {
-                        return Some((REGULAR_BUCKETS + stash_idx, slot));
-                    }
+        // chech from neighbour bucket
+        for (stash_idx, _from_neighbour) in self.regular[neighbour].find_stash_hints(fp) {
+            if !checked[stash_idx] {
+                checked[stash_idx] = true;
+                if let Some(slot) = self.stash[stash_idx].find_key(fp, key) {
+                    return Some((REGULAR_BUCKETS + stash_idx, slot));
                 }
             }
+        }
 
-            // if overflow, scan remaining stash buckets
-            if self.overflow_count > 0 {
-                for (i, bucket) in self.stash.iter().enumerate() {
-                    if !checked[i] {
-                        if let Some(slot) = bucket.find_key(fp, key) {
-                            return Some((REGULAR_BUCKETS + i, slot));
-                        }
+        // if overflow, scan remaining stash buckets
+        if self.overflow_count > 0 {
+            for (i, bucket) in self.stash.iter().enumerate() {
+                if !checked[i] {
+                    if let Some(slot) = bucket.find_key(fp, key) {
+                        return Some((REGULAR_BUCKETS + i, slot));
                     }
                 }
             }
@@ -464,6 +464,15 @@ where
             })
         });
 
+        regular_iter.chain(stash_iter)
+    }
+
+    // /// Iterate over all key-value pairs with mutable values
+    // ///
+    // /// Yields `(&K, &mut V)` for each entry.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        let regular_iter = self.regular.iter_mut().flat_map(|bucket| bucket.iter_mut());
+        let stash_iter = self.stash.iter_mut().flat_map(|bucket| bucket.iter_mut());
         regular_iter.chain(stash_iter)
     }
 

@@ -86,7 +86,8 @@ impl<K, V> Directory<K, V> {
     /// Get segment for a given hash
     #[inline]
     fn get_segment(&self, hash: u64) -> &Segment<K, V> {
-        &self.segments[self.dir_index(hash)]
+        let idx = self.segment_index(hash);
+        &self.segments[idx]
     }
 
     /// Get mutable segment for a given hash
@@ -98,14 +99,17 @@ impl<K, V> Directory<K, V> {
 
     /// Double the directory size
     fn grow_directory(&mut self) {
-        let old_size = self.directory.len();
-        self.directory.reserve(old_size);
+        // Each entry is duplicated in place: [A, B] -> [A, A, B, B]
+        // This maintains the invariant that consecutive entries with
+        // the same high-order bits share a segment
+        let mut new_dir = Vec::with_capacity(self.directory.len() * 2);
 
-        // duplicate each entry: [A, B] -> [A, B, A, B]
-        for i in 0..old_size {
-            self.directory.push(self.directory[i]);
+        for &segment_idx in &self.directory {
+            new_dir.push(segment_idx);
+            new_dir.push(segment_idx);
         }
 
+        self.directory = new_dir;
         self.global_depth += 1;
     }
 
@@ -162,6 +166,33 @@ where
         } else {
             None
         }
+    }
+
+    /// Iterate over all key-value pairs
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.segments
+            .iter()
+            .flat_map(|seg| seg.iter().map(|(_, _, k, v)| (k, v)))
+    }
+
+    /// Iterate over all key-value pairs with mutable values
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.segments.iter_mut().flat_map(|seg| seg.iter_mut())
+    }
+
+    /// Iterate over all keys
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(k, _)| k)
+    }
+
+    /// Iterate over all values
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, v)| v)
+    }
+
+    /// Iterate over all values mutably
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.iter_mut().map(|(_, v)| v)
     }
 }
 

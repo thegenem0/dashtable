@@ -592,6 +592,26 @@ where
         self.insert_at(slot, fp, key, value, displaced);
         Some(slot)
     }
+
+    /// Iterate over occupied slots, returning key and mutable value references
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        let busy = self.ctrl.busy();
+        let keys_ptr = self.keys.as_ptr();
+        let values_ptr = self.values.as_mut_ptr();
+
+        (0..SLOTS_PER_BUCKET).filter_map(move |slot| {
+            if (busy & (1 << slot)) != 0 {
+                // Safety: slot is occupied, and we hold &mut self
+                unsafe {
+                    let key = (*keys_ptr.add(slot)).assume_init_ref();
+                    let value = (*values_ptr.add(slot)).assume_init_mut();
+                    Some((key, value))
+                }
+            } else {
+                None
+            }
+        })
+    }
 }
 
 impl<K, V> Default for Bucket<K, V> {
